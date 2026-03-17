@@ -38,16 +38,17 @@ function LoginContent() {
     if (demoType) {
       const account = demoAccounts.find(a => a.role === demoType || a.id === `demo-${demoType}`);
       if (account) {
-        const success = login(account.credentials.email);
-        if (success) router.push('/dashboard');
+        login(account.credentials.email, 'demo').then(success => {
+          if (success) router.push('/dashboard');
+        });
       }
     }
   }, [searchParams, login, router]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const success = login(email);
+    const success = await login(email, password);
     if (success) {
       router.push('/dashboard');
     } else {
@@ -55,8 +56,8 @@ function LoginContent() {
     }
   };
 
-  const handleDemoLogin = (email: string) => {
-    const success = login(email);
+  const handleDemoLogin = async (demoEmail: string) => {
+    const success = await login(demoEmail, 'demo');
     if (success) router.push('/dashboard');
   };
 

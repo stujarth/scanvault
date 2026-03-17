@@ -8,30 +8,47 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { ArrowLeft, Camera, Check, Loader2, ScanLine, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Camera, Check, Loader2, ScanLine, AlertTriangle, Video, Monitor } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { DAMAGE_TYPE_LABELS, SEVERITY_LABELS, BODY_PANEL_LABELS } from '@/lib/constants';
+import { CameraScanner } from '@/components/scanning/camera-scanner';
 import Link from 'next/link';
 
 const scanZones = [
-  { id: 'front', label: 'Front', instruction: 'Stand 2 metres from the front bumper' },
-  { id: 'right', label: 'Right Side', instruction: 'Walk slowly along the right side' },
-  { id: 'rear', label: 'Rear', instruction: 'Stand 2 metres from the rear bumper' },
-  { id: 'left', label: 'Left Side', instruction: 'Walk slowly along the left side' },
-  { id: 'roof', label: 'Roof', instruction: 'Hold the device above the roof line' },
-  { id: 'wheels', label: 'Wheels & Arches', instruction: 'Capture each wheel close-up' },
+  { id: 'front', label: 'Front', instruction: 'Stand 2 metres from the front bumper, centre the vehicle in frame' },
+  { id: 'right', label: 'Right Side', instruction: 'Walk slowly along the right side, keeping the full panel in view' },
+  { id: 'rear', label: 'Rear', instruction: 'Stand 2 metres from the rear bumper, centre the vehicle in frame' },
+  { id: 'left', label: 'Left Side', instruction: 'Walk slowly along the left side, keeping the full panel in view' },
+  { id: 'roof', label: 'Roof', instruction: 'Hold the device above the roof line looking down' },
+  { id: 'wheels', label: 'Wheels & Arches', instruction: 'Capture each wheel arch close-up, including alloys' },
 ];
 
 const processingSteps = [
-  'Analysing captured images...',
-  'Detecting body panels...',
+  'Uploading images to analysis server...',
+  'Detecting body panels with AI...',
   'Identifying surface damage...',
   'Measuring damage dimensions...',
+  'Estimating repair costs...',
   'Calculating condition grade...',
-  'Generating report...',
 ];
 
 type Phase = 'setup' | 'scanning' | 'processing' | 'results';
+type ScanMode = 'camera' | 'demo';
+
+interface CapturedZone {
+  zoneId: string;
+  images: string[];
+}
+
+interface AnalysedDamage {
+  type: string;
+  severity: string;
+  panel: string;
+  description: string;
+  repairCostGbp: number | null;
+  repairMethod: string | null;
+  confidence: number;
+}
 
 export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicleId: string }> }) {
   const { vehicleId } = use(params);
@@ -39,16 +56,41 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
   if (!vehicle) notFound();
 
   const router = useRouter();
-  const damages = getDamageByVehicleId(vehicleId);
-  const newDamages = damages.filter(d => d.isNew);
+  const existingDamages = getDamageByVehicleId(vehicleId);
+  const newDamages = existingDamages.filter(d => d.isNew);
 
   const [phase, setPhase] = useState<Phase>('setup');
+  const [scanMode, setScanMode] = useState<ScanMode>('camera');
   const [currentZone, setCurrentZone] = useState(0);
   const [completedZones, setCompletedZones] = useState<string[]>([]);
+  const [capturedZones, setCapturedZones] = useState<CapturedZone[]>([]);
   const [processingStep, setProcessingStep] = useState(0);
   const [processingProgress, setProcessingProgress] = useState(0);
+  const [analysedDamages, setAnalysedDamages] = useState<AnalysedDamage[]>([]);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [resultGrade, setResultGrade] = useState<number>(0);
 
-  const handleCaptureZone = useCallback(() => {
+  // Handle camera capture for a zone
+  const handleCameraCapture = useCallback((imageData: string) => {
+    const zone = scanZones[currentZone];
+    setCapturedZones(prev => {
+      const existing = prev.find(z => z.zoneId === zone.id);
+      if (existing) {
+        return prev.map(z => z.zoneId === zone.id ? { ...z, images: [...z.images, imageData] } : z);
+      }
+      return [...prev, { zoneId: zone.id, images: [imageData] }];
+    });
+    setCompletedZones(prev => [...prev, zone.id]);
+
+    if (currentZone < scanZones.length - 1) {
+      setCurrentZone(prev => prev + 1);
+    } else {
+      setPhase('processing');
+    }
+  }, [currentZone]);
+
+  // Handle demo mode capture (simulated)
+  const handleDemoCapture = useCallback(() => {
     const zone = scanZones[currentZone];
     setTimeout(() => {
       setCompletedZones(prev => [...prev, zone.id]);
@@ -60,25 +102,137 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
     }, 1500);
   }, [currentZone]);
 
-  useEffect(() => {
-    if (phase === 'processing') {
-      const interval = setInterval(() => {
-        setProcessingProgress(prev => {
-          if (prev >= 100) {
-            clearInterval(interval);
-            setPhase('results');
-            return 100;
-          }
-          return prev + 2;
-        });
-        setProcessingStep(prev => {
-          const step = Math.floor((processingProgress / 100) * processingSteps.length);
-          return Math.min(step, processingSteps.length - 1);
-        });
-      }, 80);
-      return () => clearInterval(interval);
+  // Handle skip zone in camera mode
+  const handleSkipZone = useCallback(() => {
+    setCompletedZones(prev => [...prev, scanZones[currentZone].id]);
+    if (currentZone < scanZones.length - 1) {
+      setCurrentZone(prev => prev + 1);
+    } else {
+      setPhase('processing');
     }
-  }, [phase, processingProgress]);
+  }, [currentZone]);
+
+  // Processing phase — either call Claude Vision API or simulate
+  useEffect(() => {
+    if (phase !== 'processing') return;
+
+    if (scanMode === 'camera' && capturedZones.length > 0) {
+      // Real analysis with Claude Vision
+      runAnalysis();
+    } else {
+      // Demo mode — simulate processing
+      runDemoProcessing();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  async function runAnalysis() {
+    if (!vehicle) return;
+
+    setProcessingProgress(0);
+    setProcessingStep(0);
+
+    // Progress animation while waiting for API
+    const progressInterval = setInterval(() => {
+      setProcessingProgress(prev => {
+        if (prev >= 90) {
+          clearInterval(progressInterval);
+          return 90;
+        }
+        return prev + 1;
+      });
+      setProcessingStep(prev => {
+        const step = Math.floor((processingProgress / 100) * processingSteps.length);
+        return Math.min(step, processingSteps.length - 1);
+      });
+    }, 150);
+
+    try {
+      // Send each zone's images for analysis
+      const allDamages: AnalysedDamage[] = [];
+
+      for (const zone of capturedZones) {
+        if (zone.images.length === 0) continue;
+
+        const response = await fetch('/api/analyze-damage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            images: zone.images,
+            vehicleType: vehicle.vehicleType,
+            vehicleMake: vehicle.make,
+            vehicleModel: vehicle.model,
+            vehicleColour: vehicle.colour,
+            zone: zone.zoneId,
+          }),
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          if (result.damages) {
+            allDamages.push(...result.damages);
+          }
+        }
+      }
+
+      clearInterval(progressInterval);
+      setAnalysedDamages(allDamages);
+
+      // Calculate a simple grade based on damages found
+      const damageDeductions = allDamages.reduce((sum, d) => {
+        const severityScores: Record<string, number> = {
+          negligible: 1, minor: 3, moderate: 8, significant: 15, severe: 25,
+        };
+        return sum + (severityScores[d.severity] || 5);
+      }, 0);
+      setResultGrade(Math.max(0, 100 - damageDeductions));
+
+      setProcessingProgress(100);
+      setProcessingStep(processingSteps.length - 1);
+
+      setTimeout(() => setPhase('results'), 500);
+    } catch (err) {
+      clearInterval(progressInterval);
+      setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
+      // Fall back to demo results
+      setProcessingProgress(100);
+      setTimeout(() => setPhase('results'), 500);
+    }
+  }
+
+  function runDemoProcessing() {
+    const interval = setInterval(() => {
+      setProcessingProgress(prev => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          setPhase('results');
+          return 100;
+        }
+        return prev + 2;
+      });
+      setProcessingStep(prev => {
+        const step = Math.floor((processingProgress / 100) * processingSteps.length);
+        return Math.min(step, processingSteps.length - 1);
+      });
+    }, 80);
+    return () => clearInterval(interval);
+  }
+
+  // In results, merge AI-detected damages with existing demo damages
+  const displayDamages = analysedDamages.length > 0
+    ? analysedDamages
+    : newDamages.map(d => ({
+        type: d.type,
+        severity: d.severity,
+        panel: d.panel,
+        description: d.description,
+        repairCostGbp: d.repairEstimate?.costGbp ?? null,
+        repairMethod: d.repairEstimate?.method ?? null,
+        confidence: 0.85,
+      }));
+
+  const displayGrade = analysedDamages.length > 0 ? resultGrade : vehicle.currentGrade.score;
+  const displayGradeLabel = displayGrade >= 90 ? 'Excellent' : displayGrade >= 75 ? 'Good' : displayGrade >= 55 ? 'Fair' : displayGrade >= 30 ? 'Poor' : 'Fail';
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -96,7 +250,39 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
               <ScanLine className="h-8 w-8 text-teal-600" />
             </div>
             <h2 className="text-2xl font-bold text-gray-900">Scan {vehicle.registrationPlate}</h2>
-            <p className="text-gray-500 mt-1">{vehicle.make} {vehicle.model}</p>
+            <p className="text-gray-500 mt-1">{vehicle.make} {vehicle.model} — {vehicle.colour} {vehicle.vehicleType}</p>
+          </div>
+
+          {/* Scan mode selector */}
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setScanMode('camera')}
+              className={`p-4 rounded-xl border-2 text-center transition-all ${
+                scanMode === 'camera'
+                  ? 'border-teal-500 bg-teal-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <Video className={`h-8 w-8 mx-auto mb-2 ${scanMode === 'camera' ? 'text-teal-600' : 'text-gray-400'}`} />
+              <p className={`font-medium text-sm ${scanMode === 'camera' ? 'text-teal-700' : 'text-gray-600'}`}>
+                Live Camera
+              </p>
+              <p className="text-xs text-gray-400 mt-1">Real-time vehicle scanning with AI detection</p>
+            </button>
+            <button
+              onClick={() => setScanMode('demo')}
+              className={`p-4 rounded-xl border-2 text-center transition-all ${
+                scanMode === 'demo'
+                  ? 'border-teal-500 bg-teal-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <Monitor className={`h-8 w-8 mx-auto mb-2 ${scanMode === 'demo' ? 'text-teal-600' : 'text-gray-400'}`} />
+              <p className={`font-medium text-sm ${scanMode === 'demo' ? 'text-teal-700' : 'text-gray-600'}`}>
+                Demo Mode
+              </p>
+              <p className="text-xs text-gray-400 mt-1">Simulated scan with sample data</p>
+            </button>
           </div>
 
           <Card>
@@ -107,7 +293,7 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
                   'Vehicle is clean and dry (or note wet conditions)',
                   'Good lighting — natural daylight preferred',
                   'Clear access around all sides of the vehicle',
-                  'Phone/tablet camera lens is clean',
+                  scanMode === 'camera' ? 'Phone/tablet camera lens is clean' : 'Ready to begin simulated scan',
                   'VIN matches: ' + vehicle.vin.slice(0, 8) + '...',
                 ].map(item => (
                   <div key={item} className="flex items-center gap-3">
@@ -141,35 +327,44 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
             <Progress value={(completedZones.length / scanZones.length) * 100} className="mt-3 h-2" />
           </div>
 
-          <Card className="border-teal-200">
-            <CardContent className="p-8 text-center">
-              {/* Simulated camera view */}
-              <div className="relative mx-auto w-full max-w-md aspect-[4/3] rounded-xl bg-gray-900 overflow-hidden mb-6">
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-white/20 text-6xl">
-                    <Camera className="h-16 w-16" />
+          {scanMode === 'camera' ? (
+            /* Real camera scanner */
+            <CameraScanner
+              vehicleType={vehicle.vehicleType}
+              zone={scanZones[currentZone].id}
+              zoneLabel={scanZones[currentZone].label}
+              zoneInstruction={scanZones[currentZone].instruction}
+              onCapture={handleCameraCapture}
+              onSkip={handleSkipZone}
+            />
+          ) : (
+            /* Demo mode scanner (original UI) */
+            <Card className="border-teal-200">
+              <CardContent className="p-8 text-center">
+                <div className="relative mx-auto w-full max-w-md aspect-[4/3] rounded-xl bg-gray-900 overflow-hidden mb-6">
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="text-white/20">
+                      <Camera className="h-16 w-16" />
+                    </div>
+                  </div>
+                  <div className="absolute inset-4 border-2 border-dashed border-teal-400/50 rounded-lg" />
+                  <div className="absolute inset-0 bg-gradient-to-b from-transparent via-teal-500/5 to-transparent animate-pulse" />
+                  <div className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-teal-400" />
+                  <div className="absolute top-4 right-4 w-6 h-6 border-t-2 border-r-2 border-teal-400" />
+                  <div className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-teal-400" />
+                  <div className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-teal-400" />
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-4 py-3">
+                    <p className="text-white text-sm font-medium">{scanZones[currentZone].label}</p>
+                    <p className="text-white/70 text-xs">{scanZones[currentZone].instruction}</p>
                   </div>
                 </div>
-                {/* Scan guide overlay */}
-                <div className="absolute inset-4 border-2 border-dashed border-teal-400/50 rounded-lg" />
-                <div className="absolute inset-0 bg-gradient-to-b from-transparent via-teal-500/5 to-transparent animate-pulse" />
-                {/* Corner markers */}
-                <div className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-teal-400" />
-                <div className="absolute top-4 right-4 w-6 h-6 border-t-2 border-r-2 border-teal-400" />
-                <div className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-teal-400" />
-                <div className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-teal-400" />
-                {/* Instruction overlay */}
-                <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-4 py-3">
-                  <p className="text-white text-sm font-medium">{scanZones[currentZone].label}</p>
-                  <p className="text-white/70 text-xs">{scanZones[currentZone].instruction}</p>
-                </div>
-              </div>
 
-              <Button onClick={handleCaptureZone} size="lg" className="bg-teal-600 hover:bg-teal-700">
-                <Camera className="h-5 w-5 mr-2" /> Capture {scanZones[currentZone].label}
-              </Button>
-            </CardContent>
-          </Card>
+                <Button onClick={handleDemoCapture} size="lg" className="bg-teal-600 hover:bg-teal-700">
+                  <Camera className="h-5 w-5 mr-2" /> Capture {scanZones[currentZone].label}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Zone progress */}
           <div className="grid grid-cols-6 gap-2">
@@ -192,10 +387,17 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
         <Card>
           <CardContent className="p-12 text-center">
             <Loader2 className="h-16 w-16 text-teal-600 mx-auto mb-6 animate-spin" />
-            <h2 className="text-xl font-bold text-gray-900 mb-2">Processing Scan</h2>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              {scanMode === 'camera' ? 'Analysing with AI' : 'Processing Scan'}
+            </h2>
             <p className="text-sm text-gray-500 mb-6">{processingSteps[processingStep]}</p>
             <Progress value={processingProgress} className="max-w-md mx-auto h-3" />
-            <p className="text-xs text-gray-400 mt-3">Analysing {vehicle.totalScans > 0 ? '52' : '48'} images...</p>
+            <p className="text-xs text-gray-400 mt-3">
+              {scanMode === 'camera'
+                ? `Analysing ${capturedZones.reduce((sum, z) => sum + z.images.length, 0)} captured images...`
+                : `Analysing ${vehicle.totalScans > 0 ? '52' : '48'} images...`
+              }
+            </p>
           </CardContent>
         </Card>
       )}
@@ -204,51 +406,98 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
       {phase === 'results' && (
         <>
           <div className="text-center">
-            <div className={`mx-auto h-20 w-20 rounded-2xl flex items-center justify-center mb-4 border ${getGradeBgColour(vehicle.currentGrade.score)}`}>
-              <span className={`text-3xl font-bold ${getGradeColour(vehicle.currentGrade.score)}`}>{vehicle.currentGrade.score}</span>
+            <div className={`mx-auto h-20 w-20 rounded-2xl flex items-center justify-center mb-4 border ${getGradeBgColour(displayGrade)}`}>
+              <span className={`text-3xl font-bold ${getGradeColour(displayGrade)}`}>{displayGrade}</span>
             </div>
             <h2 className="text-2xl font-bold text-gray-900">Scan Complete</h2>
-            <Badge className={`mt-2 ${getGradeBgColour(vehicle.currentGrade.score)} ${getGradeColour(vehicle.currentGrade.score)} border text-sm`}>
-              {vehicle.currentGrade.label}
+            <Badge className={`mt-2 ${getGradeBgColour(displayGrade)} ${getGradeColour(displayGrade)} border text-sm`}>
+              {displayGradeLabel}
             </Badge>
+            {scanMode === 'camera' && analysedDamages.length > 0 && (
+              <p className="text-xs text-teal-600 mt-2">AI-powered analysis by Claude Vision</p>
+            )}
           </div>
+
+          {analysisError && (
+            <Card className="border-amber-200 bg-amber-50/30">
+              <CardContent className="p-4 text-center">
+                <p className="text-sm text-amber-700">AI analysis unavailable — showing demo results. ({analysisError})</p>
+              </CardContent>
+            </Card>
+          )}
 
           <div className="grid sm:grid-cols-3 gap-4">
             <Card>
               <CardContent className="p-5 text-center">
-                <div className="text-3xl font-bold text-gray-900">{damages.length}</div>
+                <div className="text-3xl font-bold text-gray-900">{displayDamages.length}</div>
                 <p className="text-sm text-gray-500">Damage Items</p>
               </CardContent>
             </Card>
-            <Card className={newDamages.length > 0 ? 'border-red-200' : ''}>
+            <Card className={displayDamages.length > 0 ? 'border-red-200' : ''}>
               <CardContent className="p-5 text-center">
-                <div className={`text-3xl font-bold ${newDamages.length > 0 ? 'text-red-600' : 'text-gray-900'}`}>{newDamages.length}</div>
-                <p className="text-sm text-gray-500">New Damage</p>
+                <div className={`text-3xl font-bold ${displayDamages.length > 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                  {displayDamages.filter(d => d.confidence > 0.7).length}
+                </div>
+                <p className="text-sm text-gray-500">High Confidence</p>
               </CardContent>
             </Card>
             <Card>
               <CardContent className="p-5 text-center">
-                <div className="text-3xl font-bold text-gray-900">48</div>
+                <div className="text-3xl font-bold text-gray-900">
+                  {scanMode === 'camera' ? capturedZones.reduce((sum, z) => sum + z.images.length, 0) : 48}
+                </div>
                 <p className="text-sm text-gray-500">Images Analysed</p>
               </CardContent>
             </Card>
           </div>
 
-          {newDamages.length > 0 && (
+          {displayDamages.length > 0 && (
             <Card className="border-red-200 bg-red-50/30">
               <CardContent className="p-5">
                 <div className="flex items-center gap-2 mb-3">
                   <AlertTriangle className="h-5 w-5 text-red-600" />
-                  <h3 className="font-semibold text-red-800">New Damage Detected</h3>
+                  <h3 className="font-semibold text-red-800">Damage Detected</h3>
                 </div>
                 <div className="space-y-2">
-                  {newDamages.map(d => (
-                    <div key={d.id} className="flex items-center justify-between text-sm">
-                      <span className="text-red-700">{DAMAGE_TYPE_LABELS[d.type]} — {BODY_PANEL_LABELS[d.panel]}</span>
-                      <Badge className="bg-red-100 text-red-700 text-xs">{SEVERITY_LABELS[d.severity]}</Badge>
+                  {displayDamages.map((d, i) => (
+                    <div key={i} className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <span className="text-red-700">
+                          {DAMAGE_TYPE_LABELS[d.type] || d.type} — {BODY_PANEL_LABELS[d.panel] || d.panel}
+                        </span>
+                        {d.confidence < 1 && (
+                          <span className="text-xs text-gray-400">{Math.round(d.confidence * 100)}%</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {d.repairCostGbp && (
+                          <span className="text-xs text-gray-500">~£{d.repairCostGbp}</span>
+                        )}
+                        <Badge className="bg-red-100 text-red-700 text-xs">
+                          {SEVERITY_LABELS[d.severity] || d.severity}
+                        </Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
+                {displayDamages.some(d => d.repairCostGbp) && (
+                  <div className="mt-4 pt-3 border-t border-red-200 flex justify-between text-sm">
+                    <span className="font-medium text-red-800">Estimated Total Repair Cost</span>
+                    <span className="font-bold text-red-800">
+                      £{displayDamages.reduce((sum, d) => sum + (d.repairCostGbp || 0), 0).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {displayDamages.length === 0 && (
+            <Card className="border-teal-200 bg-teal-50/30">
+              <CardContent className="p-5 text-center">
+                <Check className="h-8 w-8 text-teal-600 mx-auto mb-2" />
+                <p className="text-teal-800 font-medium">No damage detected</p>
+                <p className="text-sm text-teal-600">The vehicle body appears to be in excellent condition.</p>
               </CardContent>
             </Card>
           )}
