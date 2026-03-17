@@ -131,54 +131,49 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
 
     setProcessingProgress(0);
     setProcessingStep(0);
+    let progress = 0;
 
     // Progress animation while waiting for API
     const progressInterval = setInterval(() => {
-      setProcessingProgress(prev => {
-        if (prev >= 90) {
-          clearInterval(progressInterval);
-          return 90;
-        }
-        return prev + 1;
-      });
-      setProcessingStep(prev => {
-        const step = Math.floor((processingProgress / 100) * processingSteps.length);
-        return Math.min(step, processingSteps.length - 1);
-      });
+      if (progress >= 90) {
+        clearInterval(progressInterval);
+        return;
+      }
+      progress += 1;
+      setProcessingProgress(progress);
+      const step = Math.floor((progress / 100) * processingSteps.length);
+      setProcessingStep(Math.min(step, processingSteps.length - 1));
     }, 150);
 
     try {
-      // Send each zone's images for analysis
+      // Send all zone images in parallel for speed
+      const promises = capturedZones
+        .filter(zone => zone.images.length > 0)
+        .map(zone =>
+          fetch('/api/analyze-damage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              images: zone.images,
+              vehicleType: vehicle.vehicleType,
+              vehicleMake: vehicle.make,
+              vehicleModel: vehicle.model,
+              vehicleColour: vehicle.colour,
+              zone: zone.zoneId,
+            }),
+          }).then(r => r.ok ? r.json() : null).catch(() => null)
+        );
+
+      const results = await Promise.all(promises);
+      clearInterval(progressInterval);
+
       const allDamages: AnalysedDamage[] = [];
-
-      for (const zone of capturedZones) {
-        if (zone.images.length === 0) continue;
-
-        const response = await fetch('/api/analyze-damage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            images: zone.images,
-            vehicleType: vehicle.vehicleType,
-            vehicleMake: vehicle.make,
-            vehicleModel: vehicle.model,
-            vehicleColour: vehicle.colour,
-            zone: zone.zoneId,
-          }),
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          if (result.damages) {
-            allDamages.push(...result.damages);
-          }
-        }
+      for (const result of results) {
+        if (result?.damages) allDamages.push(...result.damages);
       }
 
-      clearInterval(progressInterval);
       setAnalysedDamages(allDamages);
 
-      // Calculate a simple grade based on damages found
       const damageDeductions = allDamages.reduce((sum, d) => {
         const severityScores: Record<string, number> = {
           negligible: 1, minor: 3, moderate: 8, significant: 15, severe: 25,
@@ -189,33 +184,30 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
 
       setProcessingProgress(100);
       setProcessingStep(processingSteps.length - 1);
-
       setTimeout(() => setPhase('results'), 500);
     } catch (err) {
       clearInterval(progressInterval);
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
-      // Fall back to demo results
       setProcessingProgress(100);
       setTimeout(() => setPhase('results'), 500);
     }
   }
 
   function runDemoProcessing() {
+    let progress = 0;
     const interval = setInterval(() => {
-      setProcessingProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setPhase('results');
-          return 100;
-        }
-        return prev + 2;
-      });
-      setProcessingStep(prev => {
-        const step = Math.floor((processingProgress / 100) * processingSteps.length);
-        return Math.min(step, processingSteps.length - 1);
-      });
+      progress += 2;
+      if (progress >= 100) {
+        clearInterval(interval);
+        setProcessingProgress(100);
+        setProcessingStep(processingSteps.length - 1);
+        setPhase('results');
+        return;
+      }
+      setProcessingProgress(progress);
+      const step = Math.floor((progress / 100) * processingSteps.length);
+      setProcessingStep(Math.min(step, processingSteps.length - 1));
     }, 80);
-    return () => clearInterval(interval);
   }
 
   // In results, merge AI-detected damages with existing demo damages

@@ -113,7 +113,7 @@ These images are from the "${body.zone}" zone scan. Identify all visible body da
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
+      max_tokens: 2048,
       messages: [
         {
           role: 'user',

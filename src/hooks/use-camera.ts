@@ -12,22 +12,24 @@ export interface CameraState {
   isReady: boolean;
   isLoading: boolean;
   error: string | null;
-  stream: MediaStream | null;
 }
 
 export function useCamera(options: CameraOptions = {}) {
-  const { facingMode = 'environment', width = 1920, height = 1080 } = options;
+  const { facingMode = 'environment', width = 1280, height = 720 } = options;
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [state, setState] = useState<CameraState>({
     isReady: false,
     isLoading: false,
     error: null,
-    stream: null,
   });
 
   const start = useCallback(async () => {
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
+    // Don't restart if already active
+    if (streamRef.current) return;
+
+    setState({ isReady: false, isLoading: true, error: null });
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -43,66 +45,56 @@ export function useCamera(options: CameraOptions = {}) {
         audio: false,
       });
 
+      streamRef.current = stream;
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
 
-      setState({ isReady: true, isLoading: false, error: null, stream });
+      setState({ isReady: true, isLoading: false, error: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to access camera';
-      setState({ isReady: false, isLoading: false, error: message, stream: null });
+      setState({ isReady: false, isLoading: false, error: message });
     }
   }, [facingMode, width, height]);
 
   const stop = useCallback(() => {
-    if (state.stream) {
-      state.stream.getTracks().forEach(track => track.stop());
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    setState({ isReady: false, isLoading: false, error: null, stream: null });
-  }, [state.stream]);
+    setState({ isReady: false, isLoading: false, error: null });
+  }, []);
 
   const captureFrame = useCallback((): string | null => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || !state.isReady) return null;
+    if (!video || !canvas || !streamRef.current) return null;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Capture at lower resolution for speed (max 1280px wide)
+    const scale = Math.min(1, 1280 / video.videoWidth);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.85);
-  }, [state.isReady]);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.75);
+  }, []);
 
-  const captureBlob = useCallback(async (): Promise<Blob | null> => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !state.isReady) return null;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    ctx.drawImage(video, 0, 0);
-    return new Promise(resolve => {
-      canvas.toBlob(blob => resolve(blob), 'image/jpeg', 0.85);
-    });
-  }, [state.isReady]);
-
-  // Cleanup on unmount
+  // Cleanup on unmount only
   useEffect(() => {
     return () => {
-      if (state.stream) {
-        state.stream.getTracks().forEach(track => track.stop());
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
     };
-  }, [state.stream]);
+  }, []);
 
   return {
     videoRef,
@@ -111,6 +103,5 @@ export function useCamera(options: CameraOptions = {}) {
     start,
     stop,
     captureFrame,
-    captureBlob,
   };
 }

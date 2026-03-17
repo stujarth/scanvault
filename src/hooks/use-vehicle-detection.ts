@@ -21,6 +21,7 @@ const VEHICLE_CLASSES = ['car', 'truck', 'bus', 'motorcycle'];
 
 export function useVehicleDetection() {
   const modelRef = useRef<any>(null);
+  const loadingRef = useRef(false);
   const [state, setState] = useState<VehicleDetectionState>({
     isModelLoaded: false,
     isLoading: false,
@@ -31,33 +32,40 @@ export function useVehicleDetection() {
   });
 
   const loadModel = useCallback(async () => {
-    if (modelRef.current) return;
+    // Prevent double-loading
+    if (modelRef.current || loadingRef.current) return;
+    loadingRef.current = true;
 
     setState(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      // Dynamic imports to avoid SSR issues with TensorFlow
       const tf = await import('@tensorflow/tfjs');
       await tf.ready();
 
-      // Set backend - prefer WebGL for performance
-      if (tf.getBackend() !== 'webgl') {
+      // Prefer WebGL, fall back to WASM then CPU
+      const currentBackend = tf.getBackend();
+      if (currentBackend !== 'webgl') {
         try {
           await tf.setBackend('webgl');
         } catch {
-          // Fall back to CPU if WebGL unavailable
-          await tf.setBackend('cpu');
+          try {
+            await tf.setBackend('wasm');
+          } catch {
+            await tf.setBackend('cpu');
+          }
         }
       }
 
       const cocoSsd = await import('@tensorflow-models/coco-ssd');
       const model = await cocoSsd.load({
-        base: 'lite_mobilenet_v2', // Smaller, faster model for mobile
+        base: 'lite_mobilenet_v2',
       });
 
       modelRef.current = model;
+      loadingRef.current = false;
       setState(prev => ({ ...prev, isModelLoaded: true, isLoading: false }));
     } catch (err) {
+      loadingRef.current = false;
       const message = err instanceof Error ? err.message : 'Failed to load detection model';
       setState(prev => ({ ...prev, isLoading: false, error: message }));
     }
@@ -99,15 +107,27 @@ export function useVehicleDetection() {
 
   const startContinuousDetection = useCallback((
     source: HTMLVideoElement,
-    intervalMs = 500
+    intervalMs = 800
   ) => {
-    const id = setInterval(() => {
-      if (source.readyState >= 2) {
-        detect(source);
-      }
-    }, intervalMs);
+    let running = true;
 
-    return () => clearInterval(id);
+    // Use requestAnimationFrame-based loop instead of setInterval
+    // to avoid stacking if detection is slower than the interval
+    async function loop() {
+      if (!running) return;
+      if (source.readyState >= 2) {
+        await detect(source);
+      }
+      if (running) {
+        setTimeout(() => {
+          if (running) requestAnimationFrame(loop);
+        }, intervalMs);
+      }
+    }
+
+    requestAnimationFrame(loop);
+
+    return () => { running = false; };
   }, [detect]);
 
   // Cleanup model on unmount
