@@ -1,7 +1,11 @@
 'use client';
 
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getOrgById } from '@/data/organisations';
+import { getOrgById, updateOrg } from '@/lib/dal';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase';
+import { Organisation } from '@/types/organisation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,9 +14,44 @@ import { Separator } from '@/components/ui/separator';
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const [org, setOrg] = useState<Organisation | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const orgNameRef = useRef<HTMLInputElement>(null);
+  const orgAddressRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!user?.organisationId) return;
+    getOrgById(user.organisationId).then(o => { if (o) setOrg(o); });
+  }, [user]);
+
   if (!user) return null;
 
-  const org = user.organisationId ? getOrgById(user.organisationId) : null;
+  const handleSaveProfile = async () => {
+    if (!isSupabaseConfigured) return;
+    setSaving(true);
+    await supabase.from('profiles').update({
+      name: nameRef.current?.value || user.name,
+      email: emailRef.current?.value || user.email,
+    }).eq('id', user.id);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleSaveOrg = async () => {
+    if (!isSupabaseConfigured || !org) return;
+    setSaving(true);
+    await updateOrg(org.id, {
+      name: orgNameRef.current?.value || org.name,
+      address: orgAddressRef.current?.value || org.address,
+    });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
 
   const roleLabels: Record<string, string> = {
     garage: 'Garage',
@@ -33,11 +72,11 @@ export default function SettingsPage() {
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                <Input defaultValue={user.name} />
+                <Input defaultValue={user.name} ref={nameRef} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <Input defaultValue={user.email} type="email" />
+                <Input defaultValue={user.email} type="email" ref={emailRef} />
               </div>
             </div>
             <div className="grid sm:grid-cols-2 gap-4">
@@ -47,10 +86,12 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Account Status</label>
-                <Badge className="bg-teal-50 text-teal-700 border-teal-200">Active — Demo</Badge>
+                <Badge className="bg-teal-50 text-teal-700 border-teal-200">{isSupabaseConfigured ? 'Active' : 'Active — Demo'}</Badge>
               </div>
             </div>
-            <Button className="bg-teal-600 hover:bg-teal-700">Save Changes</Button>
+            <Button className="bg-teal-600 hover:bg-teal-700" onClick={handleSaveProfile} disabled={saving}>
+              {saved ? 'Saved' : 'Save Changes'}
+            </Button>
           </div>
         </CardContent>
       </Card>

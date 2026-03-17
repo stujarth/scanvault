@@ -1,30 +1,56 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState, useEffect } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getReportById } from '@/data/reports';
-import { getVehicleById } from '@/data/vehicles';
-import { getScanById } from '@/data/scans';
-import { getDamageByScanId } from '@/data/damage-items';
+import { getReportById, getVehicleById, getDamageByScanId } from '@/lib/dal';
+import { Report } from '@/types/report';
+import { Vehicle } from '@/types/vehicle';
+import { DamageItem } from '@/types/damage';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { ArrowLeft, Download, Share2, Shield, Printer } from 'lucide-react';
+import { ArrowLeft, Download, Share2, Shield, Printer, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { BODY_PANEL_LABELS, DAMAGE_TYPE_LABELS, SEVERITY_LABELS, SEVERITY_COLOURS } from '@/lib/constants';
 import { format } from 'date-fns';
 
 export default function ReportViewerPage({ params }: { params: Promise<{ reportId: string }> }) {
   const { reportId } = use(params);
-  const report = getReportById(reportId);
-  if (!report) notFound();
+  const [report, setReport] = useState<Report | null>(null);
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [allDamages, setAllDamages] = useState<DamageItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const vehicle = getVehicleById(report.vehicleId);
-  if (!vehicle) notFound();
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const r = await getReportById(reportId);
+      if (cancelled) return;
+      if (!r) { notFound(); return; }
+      const v = await getVehicleById(r.vehicleId);
+      if (cancelled) return;
+      if (!v) { notFound(); return; }
+      const damages = (await Promise.all(r.scanIds.map(id => getDamageByScanId(id)))).flat();
+      if (cancelled) return;
+      setReport(r);
+      setVehicle(v);
+      setAllDamages(damages);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [reportId]);
 
-  const allDamages = report.scanIds.flatMap(id => getDamageByScanId(id));
+  if (loading || !report || !vehicle) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
+
   const totalRepairCost = allDamages.reduce((sum, d) => sum + (d.repairEstimate?.costGbp || 0), 0);
 
   return (

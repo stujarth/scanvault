@@ -1,24 +1,56 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getVehiclesByOwnerId } from '@/data/vehicles';
-import { getRecentScans } from '@/data/scans';
-import { getReportsByUserId } from '@/data/reports';
+import { getVehiclesByOwnerId, getRecentScans, getReportsByUserId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
+import { Scan } from '@/types/scan';
+import { Report } from '@/types/report';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Car, ScanLine, FileText, AlertTriangle, ChevronRight, Clock } from 'lucide-react';
+import { Car, ScanLine, FileText, AlertTriangle, ChevronRight, Clock, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { format } from 'date-fns';
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [recentScans, setRecentScans] = useState<Scan[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    async function load() {
+      const [v, s, r] = await Promise.all([
+        getVehiclesByOwnerId(user!.id),
+        getRecentScans(user!.id, 5),
+        getReportsByUserId(user!.id),
+      ]);
+      if (cancelled) return;
+      setVehicles(v);
+      setRecentScans(s);
+      setReports(r);
+      setLoading(false);
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [user]);
+
   if (!user) return null;
 
-  const vehicles = getVehiclesByOwnerId(user.id);
-  const recentScans = getRecentScans(user.id, 5);
-  const reports = getReportsByUserId(user.id);
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   const avgGrade = vehicles.length > 0
     ? Math.round(vehicles.reduce((sum, v) => sum + v.currentGrade.score, 0) / vehicles.length)

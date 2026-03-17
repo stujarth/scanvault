@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '@/providers/auth-provider';
 import { demoAccounts } from '@/data/users';
-import { Wrench, Building2, ShieldCheck, Car } from 'lucide-react';
+import { Wrench, Building2, ShieldCheck, Car, Loader2 } from 'lucide-react';
 
 const demoIcons: Record<string, React.ElementType> = {
   garage: Wrench,
@@ -29,7 +29,9 @@ function LoginContent() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const { login } = useAuth();
+  const [resetSent, setResetSent] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const { login, resetPassword, isSupabase } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -50,9 +52,26 @@ function LoginContent() {
     setError('');
     const success = await login(email, password);
     if (success) {
-      router.push('/dashboard');
+      const redirect = searchParams.get('redirect') || '/dashboard';
+      router.push(redirect);
     } else {
-      setError('Invalid credentials. Try a demo account below.');
+      setError(isSupabase ? 'Invalid credentials.' : 'Invalid credentials. Try a demo account below.');
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email) {
+      setError('Enter your email address first.');
+      return;
+    }
+    setResetLoading(true);
+    setError('');
+    const result = await resetPassword(email);
+    setResetLoading(false);
+    if (result.success) {
+      setResetSent(true);
+    } else {
+      setError(result.error || 'Failed to send reset email.');
     }
   };
 
@@ -65,7 +84,9 @@ function LoginContent() {
     <Card className="w-full max-w-md">
       <CardContent className="p-8">
         <h1 className="text-2xl font-bold text-gray-900 text-center mb-2">Sign In</h1>
-        <p className="text-sm text-gray-500 text-center mb-6">Enter your credentials or try a demo account</p>
+        <p className="text-sm text-gray-500 text-center mb-6">
+          {isSupabase ? 'Enter your credentials to sign in' : 'Enter your credentials or try a demo account'}
+        </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -77,35 +98,51 @@ function LoginContent() {
             <Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Enter password" required />
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
+          {resetSent && <p className="text-sm text-teal-600">Password reset link sent — check your email.</p>}
           <Button type="submit" className="w-full bg-teal-600 hover:bg-teal-700">Sign In</Button>
+          {isSupabase && (
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              disabled={resetLoading}
+              className="w-full text-sm text-gray-500 hover:text-teal-600 transition-colors flex items-center justify-center gap-1"
+            >
+              {resetLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+              Forgot password?
+            </button>
+          )}
         </form>
 
         <div className="text-center mt-4">
           <Link href="/register" className="text-sm text-teal-600 hover:underline">Create an account</Link>
         </div>
 
-        <div className="relative my-6">
-          <Separator />
-          <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 text-xs text-gray-400">
-            Or try a demo
-          </span>
-        </div>
+        {!isSupabase && (
+          <>
+            <div className="relative my-6">
+              <Separator />
+              <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 text-xs text-gray-400">
+                Or try a demo
+              </span>
+            </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          {demoAccounts.map(account => {
-            const Icon = demoIcons[account.role] || Wrench;
-            return (
-              <button
-                key={account.id}
-                onClick={() => handleDemoLogin(account.credentials.email)}
-                className={`flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-all ${demoColours[account.role] || ''}`}
-              >
-                <Icon className="h-5 w-5 text-gray-600" />
-                <span className="text-xs font-medium text-gray-700">{account.label}</span>
-              </button>
-            );
-          })}
-        </div>
+            <div className="grid grid-cols-2 gap-3">
+              {demoAccounts.map(account => {
+                const Icon = demoIcons[account.role] || Wrench;
+                return (
+                  <button
+                    key={account.id}
+                    onClick={() => handleDemoLogin(account.credentials.email)}
+                    className={`flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-all ${demoColours[account.role] || ''}`}
+                  >
+                    <Icon className="h-5 w-5 text-gray-600" />
+                    <span className="text-xs font-medium text-gray-700">{account.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );

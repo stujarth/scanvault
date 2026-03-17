@@ -1,18 +1,38 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getVehiclesByOwnerId } from '@/data/vehicles';
+import { getVehiclesByOwnerId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
-import { Car, ScanLine, ChevronRight } from 'lucide-react';
+import { Car, ScanLine, ChevronRight, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 
 export default function ScanSelectPage() {
   const { user } = useAuth();
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    getVehiclesByOwnerId(user.id).then(data => {
+      if (!cancelled) { setVehicles(data); setLoading(false); }
+    });
+    return () => { cancelled = true; };
+  }, [user]);
+
   if (!user) return null;
 
-  const vehicles = getVehiclesByOwnerId(user.id);
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">

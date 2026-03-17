@@ -1,7 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { createSupabaseServerClient } from '@/lib/supabase-server';
+import { isSupabaseConfigured } from '@/lib/supabase';
 
 const anthropic = new Anthropic();
+
+// Simple in-memory rate limiter: max requests per window per user
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 10; // 10 requests per minute
+
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(userId);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(userId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+
+  if (entry.count >= RATE_LIMIT_MAX) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
 
 interface AnalysisRequest {
   images: string[]; // base64 data URLs
@@ -41,6 +66,27 @@ export async function POST(request: NextRequest) {
         { error: 'Anthropic API key not configured' },
         { status: 500 }
       );
+    }
+
+    // Verify auth when Supabase is configured
+    if (isSupabaseConfigured) {
+      const supabase = await createSupabaseServerClient();
+      if (!supabase) {
+        return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+
+      // Rate limit by user ID
+      if (!checkRateLimit(user.id)) {
+        return NextResponse.json(
+          { error: 'Too many requests — please wait a moment' },
+          { status: 429 }
+        );
+      }
     }
 
     const body: AnalysisRequest = await request.json();

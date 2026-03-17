@@ -2,8 +2,12 @@
 
 import { use, useState, useEffect, useCallback } from 'react';
 import { notFound, useRouter } from 'next/navigation';
-import { getVehicleById } from '@/data/vehicles';
-import { getDamageByVehicleId } from '@/data/damage-items';
+import { getVehicleById, getDamageByVehicleId, createScan, updateScanStatus, createDamageItems } from '@/lib/dal';
+import { useAuth } from '@/providers/auth-provider';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import { uploadScanImage, saveScanImage, dataUrlToBlob } from '@/lib/supabase-storage';
+import { Vehicle } from '@/types/vehicle';
+import { DamageItem } from '@/types/damage';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,12 +56,30 @@ interface AnalysedDamage {
 
 export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicleId: string }> }) {
   const { vehicleId } = use(params);
-  const vehicle = getVehicleById(vehicleId);
-  if (!vehicle) notFound();
-
+  const { user } = useAuth();
   const router = useRouter();
-  const existingDamages = getDamageByVehicleId(vehicleId);
-  const newDamages = existingDamages.filter(d => d.isNew);
+
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [newDamages, setNewDamages] = useState<DamageItem[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [savedScanId, setSavedScanId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [v, damages] = await Promise.all([
+        getVehicleById(vehicleId),
+        getDamageByVehicleId(vehicleId),
+      ]);
+      if (cancelled) return;
+      if (!v) { notFound(); return; }
+      setVehicle(v);
+      setNewDamages(damages.filter(d => d.isNew));
+      setDataLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [vehicleId]);
 
   const [phase, setPhase] = useState<Phase>('setup');
   const [scanMode, setScanMode] = useState<ScanMode>('camera');
@@ -180,7 +202,12 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
         };
         return sum + (severityScores[d.severity] || 5);
       }, 0);
-      setResultGrade(Math.max(0, 100 - damageDeductions));
+      const grade = Math.max(0, 100 - damageDeductions);
+      const gradeLabel = grade >= 90 ? 'Excellent' : grade >= 75 ? 'Good' : grade >= 55 ? 'Fair' : grade >= 30 ? 'Poor' : 'Fail';
+      setResultGrade(grade);
+
+      // Persist to Supabase in background
+      persistScan(allDamages, grade, gradeLabel);
 
       setProcessingProgress(100);
       setProcessingStep(processingSteps.length - 1);
@@ -210,6 +237,65 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
     }, 80);
   }
 
+  // Persist scan results to Supabase
+  async function persistScan(damages: AnalysedDamage[], grade: number, gradeLabel: string) {
+    if (!isSupabaseConfigured || !user || !vehicle) return;
+
+    try {
+      // 1. Create the scan record
+      const scan = await createScan({
+        vehicleId,
+        performedBy: user.id,
+        type: 'exterior_full',
+        status: 'processing',
+        context: 'Full exterior scan',
+        mileageAtScan: vehicle.mileage,
+        imageCount: capturedZones.reduce((sum, z) => sum + z.images.length, 0),
+      });
+
+      if (!scan) return;
+      setSavedScanId(scan.id);
+
+      // 2. Upload captured images and save references
+      for (const zone of capturedZones) {
+        for (let i = 0; i < zone.images.length; i++) {
+          const blob = dataUrlToBlob(zone.images[i]);
+          const imageUrl = await uploadScanImage(scan.id, zone.zoneId, blob, i);
+          if (imageUrl) {
+            await saveScanImage({ scanId: scan.id, position: zone.zoneId, imageUrl });
+          }
+        }
+      }
+
+      // 3. Save damage items
+      if (damages.length > 0) {
+        await createDamageItems(
+          damages.map(d => ({
+            scanId: scan.id,
+            vehicleId,
+            type: d.type as any,
+            severity: d.severity as any,
+            panel: d.panel as any,
+            description: d.description,
+            repairEstimate: d.repairCostGbp ? { costGbp: d.repairCostGbp, method: d.repairMethod || 'Unknown' } : undefined,
+            confidence: d.confidence,
+            isNew: true,
+            firstDetectedScanId: scan.id,
+          }))
+        );
+      }
+
+      // 4. Update scan status to complete with grade
+      await updateScanStatus(scan.id, 'complete', {
+        overall: grade,
+        label: gradeLabel,
+        profile: 'private_sale',
+      });
+    } catch (err) {
+      console.error('Failed to persist scan:', err);
+    }
+  }
+
   // In results, merge AI-detected damages with existing demo damages
   const displayDamages = analysedDamages.length > 0
     ? analysedDamages
@@ -222,6 +308,14 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
         repairMethod: d.repairEstimate?.method ?? null,
         confidence: 0.85,
       }));
+
+  if (dataLoading || !vehicle) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   const displayGrade = analysedDamages.length > 0 ? resultGrade : vehicle.currentGrade.score;
   const displayGradeLabel = displayGrade >= 90 ? 'Excellent' : displayGrade >= 75 ? 'Good' : displayGrade >= 55 ? 'Fair' : displayGrade >= 30 ? 'Poor' : 'Fail';
@@ -498,6 +592,11 @@ export default function ScanSimulatorPage({ params }: { params: Promise<{ vehicl
             <Button asChild className="bg-teal-600 hover:bg-teal-700">
               <Link href={`/vehicles/${vehicleId}/body-map`}>View Body Map</Link>
             </Button>
+            {savedScanId && (
+              <Button variant="outline" asChild>
+                <Link href={`/vehicles/${vehicleId}/scans/${savedScanId}`}>View Scan Details</Link>
+              </Button>
+            )}
             <Button variant="outline" asChild>
               <Link href={`/vehicles/${vehicleId}`}>View Vehicle</Link>
             </Button>

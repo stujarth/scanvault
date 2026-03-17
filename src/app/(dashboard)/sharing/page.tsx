@@ -1,21 +1,60 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getReportsByUserId, getSharedReportsForOrg } from '@/data/reports';
-import { getVehicleById } from '@/data/vehicles';
+import { getReportsByUserId, getSharedReportsForOrg, getVehicleById } from '@/lib/dal';
+import { Report } from '@/types/report';
+import { Vehicle } from '@/types/vehicle';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Share2, Link2, Eye, Download, Clock, Shield } from 'lucide-react';
+import { Share2, Link2, Eye, Download, Clock, Shield, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function SharingPage() {
   const { user } = useAuth();
+  const [sharedReports, setSharedReports] = useState<Report[]>([]);
+  const [receivedReports, setReceivedReports] = useState<Report[]>([]);
+  const [vehicleMap, setVehicleMap] = useState<Record<string, Vehicle>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    async function load() {
+      const [reports, received] = await Promise.all([
+        getReportsByUserId(user!.id),
+        user!.organisationId ? getSharedReportsForOrg(user!.organisationId) : Promise.resolve([]),
+      ]);
+      if (cancelled) return;
+
+      const shared = reports.filter(r => r.sharedWith && r.sharedWith.length > 0);
+      setSharedReports(shared);
+      setReceivedReports(received);
+
+      const allReports = [...shared, ...received];
+      const vehicleIds = [...new Set(allReports.map(r => r.vehicleId))];
+      const vehicles = await Promise.all(vehicleIds.map(id => getVehicleById(id)));
+      if (!cancelled) {
+        const map: Record<string, Vehicle> = {};
+        vehicles.forEach(v => { if (v) map[v.id] = v; });
+        setVehicleMap(map);
+        setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [user]);
+
   if (!user) return null;
 
-  const reports = getReportsByUserId(user.id);
-  const sharedReports = reports.filter(r => r.sharedWith.length > 0);
-  const receivedReports = user.organisationId ? getSharedReportsForOrg(user.organisationId) : [];
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -40,7 +79,7 @@ export default function SharingPage() {
           ) : (
             <div className="space-y-3">
               {sharedReports.map(report => {
-                const vehicle = getVehicleById(report.vehicleId);
+                const vehicle = vehicleMap[report.vehicleId];
                 return report.sharedWith.map(share => (
                   <Card key={share.id}>
                     <CardContent className="p-4">
@@ -84,7 +123,7 @@ export default function SharingPage() {
           ) : (
             <div className="space-y-3">
               {receivedReports.map(report => {
-                const vehicle = getVehicleById(report.vehicleId);
+                const vehicle = vehicleMap[report.vehicleId];
                 return (
                   <Card key={report.id} className="hover:border-indigo-200 transition-colors cursor-pointer">
                     <CardContent className="p-4">

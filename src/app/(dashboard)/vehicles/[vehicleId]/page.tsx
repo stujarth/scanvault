@@ -1,29 +1,60 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState, useEffect } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getVehicleById } from '@/data/vehicles';
-import { getScansByVehicleId } from '@/data/scans';
-import { getDamageByVehicleId } from '@/data/damage-items';
-import { getReportsByVehicleId } from '@/data/reports';
+import { getVehicleById, getScansByVehicleId, getDamageByVehicleId, getReportsByVehicleId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
+import { Scan } from '@/types/scan';
+import { DamageItem } from '@/types/damage';
+import { Report } from '@/types/report';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, ScanLine, Car, Calendar, Gauge, FileText, Map, Clock } from 'lucide-react';
+import { ArrowLeft, ScanLine, Car, Calendar, Gauge, FileText, Map, Clock, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { BODY_PANEL_LABELS, DAMAGE_TYPE_LABELS, SEVERITY_LABELS, SEVERITY_COLOURS } from '@/lib/constants';
 import { format } from 'date-fns';
 
 export default function VehicleDetailPage({ params }: { params: Promise<{ vehicleId: string }> }) {
   const { vehicleId } = use(params);
-  const vehicle = getVehicleById(vehicleId);
-  if (!vehicle) notFound();
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [scans, setScans] = useState<Scan[]>([]);
+  const [damages, setDamages] = useState<DamageItem[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const scans = getScansByVehicleId(vehicleId);
-  const damages = getDamageByVehicleId(vehicleId);
-  const reports = getReportsByVehicleId(vehicleId);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      const [v, s, d, r] = await Promise.all([
+        getVehicleById(vehicleId),
+        getScansByVehicleId(vehicleId),
+        getDamageByVehicleId(vehicleId),
+        getReportsByVehicleId(vehicleId),
+      ]);
+      if (cancelled) return;
+      if (!v) { notFound(); return; }
+      setVehicle(v);
+      setScans(s);
+      setDamages(d);
+      setReports(r);
+      setLoading(false);
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [vehicleId]);
+
+  if (loading || !vehicle) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -61,7 +92,7 @@ export default function VehicleDetailPage({ params }: { params: Promise<{ vehicl
           { label: 'Total Scans', value: vehicle.totalScans, icon: ScanLine },
           { label: 'Damage Items', value: damages.length, icon: Map },
           { label: 'Reports', value: reports.length, icon: FileText },
-          { label: 'MOT Expiry', value: format(new Date(vehicle.motExpiry), 'd MMM yyyy'), icon: Calendar },
+          { label: 'MOT Expiry', value: vehicle.motExpiry ? format(new Date(vehicle.motExpiry), 'd MMM yyyy') : 'N/A', icon: Calendar },
         ].map(stat => (
           <Card key={stat.label}>
             <CardContent className="p-4">

@@ -1,24 +1,40 @@
 'use client';
 
 import { useAuth } from '@/providers/auth-provider';
-import { getVehiclesByOwnerId } from '@/data/vehicles';
+import { getVehiclesByOwnerId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import Link from 'next/link';
-import { Plus, Car, Search } from 'lucide-react';
+import { Plus, Car, Search, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { format } from 'date-fns';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 export default function VehiclesPage() {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    setLoading(true);
+    getVehiclesByOwnerId(user.id).then(data => {
+      if (!cancelled) {
+        setVehicles(data);
+        setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [user]);
 
   if (!user) return null;
 
-  const vehicles = getVehiclesByOwnerId(user.id).filter(v =>
+  const filtered = vehicles.filter(v =>
     !search || v.registrationPlate.toLowerCase().includes(search.toLowerCase()) ||
     v.make.toLowerCase().includes(search.toLowerCase()) ||
     v.model.toLowerCase().includes(search.toLowerCase())
@@ -43,7 +59,11 @@ export default function VehiclesPage() {
         />
       </div>
 
-      {vehicles.length === 0 ? (
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+        </div>
+      ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center">
             <Car className="h-12 w-12 text-gray-300 mx-auto mb-4" />
@@ -56,7 +76,7 @@ export default function VehiclesPage() {
         </Card>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {vehicles.map(vehicle => (
+          {filtered.map(vehicle => (
             <Link key={vehicle.id} href={`/vehicles/${vehicle.id}`}>
               <Card className="hover:shadow-md hover:border-teal-200 transition-all cursor-pointer h-full">
                 <CardContent className="p-5">

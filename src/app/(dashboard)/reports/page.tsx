@@ -1,22 +1,63 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getReportsByUserId, getSharedReportsForOrg } from '@/data/reports';
-import { getVehicleById } from '@/data/vehicles';
+import { getReportsByUserId, getSharedReportsForOrg, getVehicleById } from '@/lib/dal';
+import { Report } from '@/types/report';
+import { Vehicle } from '@/types/vehicle';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
-import { FileText } from 'lucide-react';
+import { FileText, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { format } from 'date-fns';
 
 export default function ReportsPage() {
   const { user } = useAuth();
+  const [allReports, setAllReports] = useState<Report[]>([]);
+  const [ownReportIds, setOwnReportIds] = useState<Set<string>>(new Set());
+  const [vehicleMap, setVehicleMap] = useState<Record<string, Vehicle>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    async function load() {
+      const [own, shared] = await Promise.all([
+        getReportsByUserId(user!.id),
+        user!.organisationId ? getSharedReportsForOrg(user!.organisationId) : Promise.resolve([]),
+      ]);
+      if (cancelled) return;
+
+      const ownIds = new Set(own.map(r => r.id));
+      const merged = [...own, ...shared.filter(r => !ownIds.has(r.id))];
+      setOwnReportIds(ownIds);
+      setAllReports(merged);
+
+      const vehicleIds = [...new Set(merged.map(r => r.vehicleId))];
+      const vehicles = await Promise.all(vehicleIds.map(id => getVehicleById(id)));
+      if (!cancelled) {
+        const map: Record<string, Vehicle> = {};
+        vehicles.forEach(v => { if (v) map[v.id] = v; });
+        setVehicleMap(map);
+        setLoading(false);
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [user]);
+
   if (!user) return null;
 
-  const ownReports = getReportsByUserId(user.id);
-  const sharedReports = user.organisationId ? getSharedReportsForOrg(user.organisationId) : [];
-  const allReports = [...ownReports, ...sharedReports.filter(r => !ownReports.some(o => o.id === r.id))];
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -33,8 +74,8 @@ export default function ReportsPage() {
       ) : (
         <div className="space-y-3">
           {allReports.map(report => {
-            const vehicle = getVehicleById(report.vehicleId);
-            const isShared = !ownReports.some(o => o.id === report.id);
+            const vehicle = vehicleMap[report.vehicleId];
+            const isShared = !ownReportIds.has(report.id);
             return (
               <Link key={report.id} href={`/reports/${report.id}`}>
                 <Card className="hover:border-teal-200 transition-colors cursor-pointer mb-3">

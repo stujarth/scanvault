@@ -1,23 +1,59 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState, useEffect } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getVehicleById } from '@/data/vehicles';
-import { getScansByVehicleId } from '@/data/scans';
-import { getDamageByScanId } from '@/data/damage-items';
+import { getVehicleById, getScansByVehicleId, getDamageByScanId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
+import { Scan } from '@/types/scan';
+import { DamageItem } from '@/types/damage';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, ScanLine, Clock, MapPin, Cloud, Camera } from 'lucide-react';
+import { ArrowLeft, ScanLine, Clock, MapPin, Cloud, Camera, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { format } from 'date-fns';
 
 export default function ScanHistoryPage({ params }: { params: Promise<{ vehicleId: string }> }) {
   const { vehicleId } = use(params);
-  const vehicle = getVehicleById(vehicleId);
-  if (!vehicle) notFound();
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [scans, setScans] = useState<Scan[]>([]);
+  const [scanDamages, setScanDamages] = useState<Record<string, DamageItem[]>>({});
+  const [loading, setLoading] = useState(true);
 
-  const scans = getScansByVehicleId(vehicleId);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [v, s] = await Promise.all([
+        getVehicleById(vehicleId),
+        getScansByVehicleId(vehicleId),
+      ]);
+      if (cancelled) return;
+      if (!v) { notFound(); return; }
+      setVehicle(v);
+      setScans(s);
+
+      // Load damages per scan
+      const damageMap: Record<string, DamageItem[]> = {};
+      await Promise.all(s.map(async (scan) => {
+        const damages = await getDamageByScanId(scan.id);
+        damageMap[scan.id] = damages;
+      }));
+      if (!cancelled) {
+        setScanDamages(damageMap);
+        setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [vehicleId]);
+
+  if (loading || !vehicle) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -32,7 +68,7 @@ export default function ScanHistoryPage({ params }: { params: Promise<{ vehicleI
         <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200" />
         <div className="space-y-6">
           {scans.map((scan, index) => {
-            const damages = getDamageByScanId(scan.id);
+            const damages = scanDamages[scan.id] || [];
             const newDamages = damages.filter(d => d.isNew);
             return (
               <div key={scan.id} className="relative pl-14">
@@ -59,8 +95,8 @@ export default function ScanHistoryPage({ params }: { params: Promise<{ vehicleI
                         {newDamages.length > 0 && (
                           <Badge className="bg-red-50 text-red-700 border-red-200 text-xs">{newDamages.length} new</Badge>
                         )}
-                        <span className="text-gray-500">{scan.mileageAtScan.toLocaleString()} miles</span>
-                        <span className="text-gray-500">{Math.round(scan.duration / 60)} min scan</span>
+                        {scan.mileageAtScan && <span className="text-gray-500">{scan.mileageAtScan.toLocaleString()} miles</span>}
+                        {scan.duration && <span className="text-gray-500">{Math.round(scan.duration / 60)} min scan</span>}
                       </div>
                     </CardContent>
                   </Card>

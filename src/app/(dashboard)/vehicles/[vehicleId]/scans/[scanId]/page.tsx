@@ -1,25 +1,53 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState, useEffect } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getVehicleById } from '@/data/vehicles';
-import { getScanById } from '@/data/scans';
-import { getDamageByScanId } from '@/data/damage-items';
+import { getVehicleById, getScanById, getDamageByScanId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
+import { Scan } from '@/types/scan';
+import { DamageItem } from '@/types/damage';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Clock, MapPin, Cloud, Camera, Gauge } from 'lucide-react';
+import { ArrowLeft, Clock, MapPin, Cloud, Camera, Gauge, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 import { BODY_PANEL_LABELS, DAMAGE_TYPE_LABELS, SEVERITY_LABELS, SEVERITY_COLOURS } from '@/lib/constants';
 import { format } from 'date-fns';
 
 export default function ScanDetailPage({ params }: { params: Promise<{ vehicleId: string; scanId: string }> }) {
   const { vehicleId, scanId } = use(params);
-  const vehicle = getVehicleById(vehicleId);
-  const scan = getScanById(scanId);
-  if (!vehicle || !scan) notFound();
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [damages, setDamages] = useState<DamageItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const damages = getDamageByScanId(scanId);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [v, s, d] = await Promise.all([
+        getVehicleById(vehicleId),
+        getScanById(scanId),
+        getDamageByScanId(scanId),
+      ]);
+      if (cancelled) return;
+      if (!v || !s) { notFound(); return; }
+      setVehicle(v);
+      setScan(s);
+      setDamages(d);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [vehicleId, scanId]);
+
+  if (loading || !vehicle || !scan) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
+
   const newDamages = damages.filter(d => d.isNew);
   const totalRepairCost = damages.reduce((sum, d) => sum + (d.repairEstimate?.costGbp || 0), 0);
 
@@ -46,7 +74,7 @@ export default function ScanDetailPage({ params }: { params: Promise<{ vehicleId
           { icon: MapPin, label: 'Location', value: scan.location || 'Not recorded' },
           { icon: Cloud, label: 'Weather', value: scan.weatherConditions || 'Not recorded' },
           { icon: Camera, label: 'Images', value: `${scan.imageCount} captured` },
-          { icon: Gauge, label: 'Mileage', value: `${scan.mileageAtScan.toLocaleString()} mi` },
+          { icon: Gauge, label: 'Mileage', value: scan.mileageAtScan ? `${scan.mileageAtScan.toLocaleString()} mi` : 'N/A' },
         ].map(item => (
           <Card key={item.label}>
             <CardContent className="p-4">

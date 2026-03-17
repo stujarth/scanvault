@@ -1,14 +1,14 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useState, useEffect } from 'react';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { getVehicleById } from '@/data/vehicles';
-import { getDamageByVehicleId } from '@/data/damage-items';
+import { getVehicleById, getDamageByVehicleId } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { BODY_PANEL_LABELS, DAMAGE_TYPE_LABELS, SEVERITY_LABELS, SEVERITY_COLOURS } from '@/lib/constants';
 import { DamageItem } from '@/types/damage';
 
@@ -105,12 +105,36 @@ function CarSvg({ view, damages, onPinClick, selectedId }: { view: ViewAngle; da
 
 export default function BodyMapPage({ params }: { params: Promise<{ vehicleId: string }> }) {
   const { vehicleId } = use(params);
-  const vehicle = getVehicleById(vehicleId);
-  if (!vehicle) notFound();
-
-  const damages = getDamageByVehicleId(vehicleId);
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
+  const [damages, setDamages] = useState<DamageItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [view, setView] = useState<ViewAngle>('top');
   const [selected, setSelected] = useState<DamageItem | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [v, d] = await Promise.all([
+        getVehicleById(vehicleId),
+        getDamageByVehicleId(vehicleId),
+      ]);
+      if (cancelled) return;
+      if (!v) { notFound(); return; }
+      setVehicle(v);
+      setDamages(d);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [vehicleId]);
+
+  if (loading || !vehicle) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

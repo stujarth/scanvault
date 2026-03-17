@@ -1,21 +1,50 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/providers/auth-provider';
-import { getVehiclesByOwnerId } from '@/data/vehicles';
-import { getOrgById } from '@/data/organisations';
+import { getVehiclesByOwnerId, getOrgById } from '@/lib/dal';
+import { Vehicle } from '@/types/vehicle';
+import { Organisation } from '@/types/organisation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Users, Car, ScanLine, TrendingUp, UserPlus, Building2 } from 'lucide-react';
+import { Users, Car, ScanLine, TrendingUp, UserPlus, Building2, Loader2 } from 'lucide-react';
 import { getGradeColour, getGradeBgColour } from '@/lib/grading';
 
 export default function FleetPage() {
   const { user } = useAuth();
+  const [org, setOrg] = useState<Organisation | null>(null);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    async function load() {
+      const [v, o] = await Promise.all([
+        getVehiclesByOwnerId(user!.id),
+        user!.organisationId ? getOrgById(user!.organisationId) : Promise.resolve(undefined),
+      ]);
+      if (cancelled) return;
+      setVehicles(v);
+      setOrg(o ?? null);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [user]);
+
   if (!user) return null;
 
-  const org = user.organisationId ? getOrgById(user.organisationId) : null;
-  const vehicles = getVehiclesByOwnerId(user.id);
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
+
   const avgGrade = vehicles.length > 0 ? Math.round(vehicles.reduce((sum, v) => sum + v.currentGrade.score, 0) / vehicles.length) : 0;
   const totalScans = vehicles.reduce((sum, v) => sum + v.totalScans, 0);
 

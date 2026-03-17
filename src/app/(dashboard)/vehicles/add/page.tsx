@@ -2,19 +2,24 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/providers/auth-provider';
+import { createVehicle } from '@/lib/dal';
+import { isSupabaseConfigured } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Search, Check } from 'lucide-react';
+import { ArrowLeft, Search, Check, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
 export default function AddVehiclePage() {
   const [regPlate, setRegPlate] = useState('');
   const [vin, setVin] = useState('');
-  const [lookupResult, setLookupResult] = useState<{ make: string; model: string; year: number; colour: string; fuelType: string } | null>(null);
+  const [lookupResult, setLookupResult] = useState<{ make: string; model: string; year: number; colour: string; fuelType: string; vehicleType: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const router = useRouter();
+  const { user } = useAuth();
 
   const handleRegLookup = () => {
     // Mock DVLA lookup
@@ -24,6 +29,7 @@ export default function AddVehiclePage() {
       year: 2022,
       colour: 'Blue',
       fuelType: 'Petrol',
+      vehicleType: 'hatchback',
     });
   };
 
@@ -34,11 +40,36 @@ export default function AddVehiclePage() {
       year: 2021,
       colour: 'Black',
       fuelType: 'Diesel',
+      vehicleType: 'saloon',
     });
   };
 
-  const handleAdd = () => {
-    // In demo, just redirect
+  const handleAdd = async () => {
+    if (!lookupResult || !user) return;
+
+    if (isSupabaseConfigured) {
+      setSaving(true);
+      const vehicle = await createVehicle({
+        registrationPlate: regPlate || vin,
+        make: lookupResult.make,
+        model: lookupResult.model,
+        year: lookupResult.year,
+        colour: lookupResult.colour,
+        fuelType: lookupResult.fuelType as any,
+        vehicleType: lookupResult.vehicleType as any,
+        ownerId: user.id,
+        organisationId: user.organisationId,
+        mileage: 0,
+      });
+      setSaving(false);
+
+      if (vehicle) {
+        router.push(`/vehicles/${vehicle.id}`);
+        return;
+      }
+    }
+
+    // Demo fallback
     router.push('/vehicles');
   };
 
@@ -148,7 +179,10 @@ export default function AddVehiclePage() {
               </div>
             </div>
             <div className="mt-6 flex gap-3">
-              <Button onClick={handleAdd} className="bg-teal-600 hover:bg-teal-700">Add This Vehicle</Button>
+              <Button onClick={handleAdd} className="bg-teal-600 hover:bg-teal-700" disabled={saving}>
+                {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Add This Vehicle
+              </Button>
               <Button variant="outline" onClick={() => setLookupResult(null)}>Cancel</Button>
             </div>
           </CardContent>

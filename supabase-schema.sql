@@ -129,6 +129,24 @@ create table shared_reports (
   created_at timestamptz default now()
 );
 
+-- RPC: create an organisation for the current user and link their profile
+create or replace function public.create_org_for_user(org_name text, org_type text)
+returns uuid as $$
+declare
+  new_org_id uuid;
+begin
+  insert into organisations (name, type)
+  values (org_name, org_type)
+  returning id into new_org_id;
+
+  update profiles
+  set organisation_id = new_org_id
+  where id = auth.uid();
+
+  return new_org_id;
+end;
+$$ language plpgsql security definer;
+
 -- Row Level Security
 alter table organisations enable row level security;
 alter table profiles enable row level security;
@@ -139,29 +157,89 @@ alter table damage_items enable row level security;
 alter table reports enable row level security;
 alter table shared_reports enable row level security;
 
--- Policies: users can read/write their own org's data
+-- Organisation policies
+create policy "Users can read own org" on organisations for select
+  using (id in (select organisation_id from profiles where id = auth.uid()));
+create policy "Users can update own org" on organisations for update
+  using (id in (select organisation_id from profiles where id = auth.uid()));
+create policy "Service role can insert orgs" on organisations for insert
+  with check (true); -- create_org_for_user runs as security definer
+
+-- Profile policies
 create policy "Users can read own profile" on profiles for select using (auth.uid() = id);
 create policy "Users can update own profile" on profiles for update using (auth.uid() = id);
+create policy "Users can read org members" on profiles for select
+  using (organisation_id in (select organisation_id from profiles where id = auth.uid()));
 
-create policy "Users can read own vehicles" on vehicles for select using (owner_id = auth.uid());
+-- Vehicle policies: owner OR org members can read; only owner can insert
+create policy "Users can read org vehicles" on vehicles for select
+  using (
+    owner_id = auth.uid()
+    OR organisation_id IN (
+      SELECT organisation_id FROM profiles WHERE id = auth.uid()
+    )
+  );
 create policy "Users can insert own vehicles" on vehicles for insert with check (owner_id = auth.uid());
+create policy "Users can update own vehicles" on vehicles for update using (owner_id = auth.uid());
 
-create policy "Users can read own scans" on scans for select using (performed_by = auth.uid());
+-- Scan policies: performer OR org member (via vehicle) can read
+create policy "Users can read org scans" on scans for select
+  using (
+    performed_by = auth.uid()
+    OR vehicle_id IN (
+      SELECT id FROM vehicles WHERE organisation_id IN (
+        SELECT organisation_id FROM profiles WHERE id = auth.uid()
+      )
+    )
+  );
 create policy "Users can insert own scans" on scans for insert with check (performed_by = auth.uid());
 create policy "Users can update own scans" on scans for update using (performed_by = auth.uid());
 
-create policy "Users can read own scan images" on scan_images for select
-  using (scan_id in (select id from scans where performed_by = auth.uid()));
+-- Scan image policies: org-scoped via scan
+create policy "Users can read org scan images" on scan_images for select
+  using (scan_id IN (
+    SELECT id FROM scans WHERE performed_by = auth.uid()
+    OR vehicle_id IN (
+      SELECT id FROM vehicles WHERE organisation_id IN (
+        SELECT organisation_id FROM profiles WHERE id = auth.uid()
+      )
+    )
+  ));
 create policy "Users can insert own scan images" on scan_images for insert
-  with check (scan_id in (select id from scans where performed_by = auth.uid()));
+  with check (scan_id IN (SELECT id FROM scans WHERE performed_by = auth.uid()));
 
-create policy "Users can read own damage items" on damage_items for select
-  using (scan_id in (select id from scans where performed_by = auth.uid()));
+-- Damage item policies: org-scoped via vehicle
+create policy "Users can read org damage items" on damage_items for select
+  using (
+    vehicle_id IN (
+      SELECT id FROM vehicles WHERE owner_id = auth.uid()
+      OR organisation_id IN (
+        SELECT organisation_id FROM profiles WHERE id = auth.uid()
+      )
+    )
+  );
 create policy "Users can insert own damage items" on damage_items for insert
-  with check (scan_id in (select id from scans where performed_by = auth.uid()));
+  with check (scan_id IN (SELECT id FROM scans WHERE performed_by = auth.uid()));
 
-create policy "Users can read own reports" on reports for select using (generated_by = auth.uid());
+-- Report policies: generator OR org members can read
+create policy "Users can read org reports" on reports for select
+  using (
+    generated_by = auth.uid()
+    OR vehicle_id IN (
+      SELECT id FROM vehicles WHERE organisation_id IN (
+        SELECT organisation_id FROM profiles WHERE id = auth.uid()
+      )
+    )
+  );
 create policy "Users can insert own reports" on reports for insert with check (generated_by = auth.uid());
+
+-- Shared report policies: public access by token, org members can manage
+create policy "Anyone can read shared reports by token" on shared_reports for select
+  using (true); -- Token validation done at application level
+create policy "Users can insert shared reports" on shared_reports for insert
+  with check (report_id IN (SELECT id FROM reports WHERE generated_by = auth.uid()));
+create policy "Users can delete own shared reports" on shared_reports for delete
+  using (report_id IN (SELECT id FROM reports WHERE generated_by = auth.uid()));
 
 -- Storage bucket for scan images
 -- Run this separately or via Supabase dashboard:
